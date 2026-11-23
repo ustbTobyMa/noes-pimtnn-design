@@ -10,8 +10,12 @@ from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupKFold, KFold
 from sklearn.preprocessing import StandardScaler
 
-from dataset import DATA, FEATURES, TARGETS, read_records
+from dataset import DATA, FEATURES, TABLE_S4_DIGEST, TARGETS, read_records, record_digest
 from model import MultiTaskNet, directional_penalty, observed_mse
+
+
+DEMO_SEED = 42
+TARGET_UNITS = ("T", "W/kg", "MPa")
 
 
 def scaled_inputs(train, test):
@@ -59,7 +63,7 @@ def fit_fold(raw, labels, descriptors, directions, train, test, variant, epochs,
     return target_scaler.inverse_transform(scaled)
 
 
-def cross_validate(raw, labels, descriptors, directions, variant, epochs, seed=42, groups=None):
+def cross_validate(raw, labels, descriptors, directions, variant, epochs, seed=DEMO_SEED, groups=None):
     """Return one held-out prediction per row. Group labels, when used, are supplied by the caller."""
     if variant not in {"mtnn", "mtnn-physics", "pi-mtnn"} or epochs < 1:
         raise ValueError("Specify a supported model and a positive number of epochs.")
@@ -102,10 +106,13 @@ def fold_metrics(observed, predicted, folds):
 def read_groups(path, ids):
     with Path(path).open(encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
-        if not {"record_id", "source_id"}.issubset(reader.fieldnames or []):
-            raise ValueError("Group CSV needs record_id and source_id.")
+        header = reader.fieldnames or []
+        if header.count("record_id") != 1 or header.count("source_id") != 1:
+            raise ValueError("Group CSV needs one record_id column and one source_id column.")
         by_id = {}
         for row in reader:
+            if None in row or not (row["record_id"] or "").strip():
+                raise ValueError(f"Malformed group CSV at line {reader.line_num}.")
             key = int(row["record_id"])
             source = (row["source_id"] or "").strip()
             if key in by_id or not source:
@@ -116,14 +123,26 @@ def read_groups(path, ids):
     return [by_id[key] for key in ids]
 
 
-def export_oof(path, ids, folds, labels, predictions):
+def export_oof(path, ids, folds, labels, predictions, *, run_info=None):
+    """Write values in physical units and carry the run description with each exported row."""
+    path = Path(path)
+    labels = np.asarray(labels, dtype=float)
+    predictions = np.asarray(predictions, dtype=float)
+    if len(folds) != len(ids) or labels.shape != (len(ids), len(TARGETS)) or predictions.shape != labels.shape:
+        raise ValueError("Record IDs, folds and three-target predictions must align.")
+    info = {} if run_info is None else run_info
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8", newline="") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(["record_id", "fold", *["observed_" + t for t in TARGETS],
-                         *["predicted_" + t for t in TARGETS]])
-        for key, fold, obs, pred in zip(ids, folds, labels, predictions):
-            writer.writerow([key, fold, *[v if np.isfinite(v) else "" for v in obs], *pred])
+    stream = path.open("x", encoding="utf-8", newline="")
+    try:
+        with stream:
+            writer = csv.writer(stream)
+            writer.writerow(["record_id", "fold", *["observed_" + t for t in TARGETS],
+                             *["predicted_" + t for t in TARGETS], *info.keys()])
+            for key, fold, obs, pred in zip(ids, folds, labels, predictions):
+                writer.writerow([key, fold, *[v if np.isfinite(v) else "" for v in obs], *pred, *info.values()])
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def main():
@@ -135,6 +154,8 @@ def main():
     parser.add_argument("--export-oof", type=Path, help="New CSV for example held-out predictions in physical units.")
     args = parser.parse_args()
     rows = read_records(args.data)
+    digest = record_digest(rows)
+    input_source = "Supplementary Table S4" if digest == TABLE_S4_DIGEST else "user-supplied records"
     ids = [row["record_id"] for row in rows]
     raw = np.asarray([[row[col] for col in FEATURES] for row in rows], dtype=float)
     labels = np.asarray([[row[col] for col in TARGETS] for row in rows], dtype=float)
@@ -149,12 +170,29 @@ def main():
     torch.set_num_threads(1)
     folds, predictions = cross_validate(raw, labels, descriptors, directions, args.model, args.epochs, groups=groups)
     protocol = "source-grouped" if groups is not None else "record-random"
-    print(f"Framework demonstration | {args.data.name} | {len(ids)} rows | {args.model} | {protocol} five-fold CV")
-    print("Target             Mean fold RMSE (folds)     Mean fold R2 (folds)")
-    for name, (rmse, n_rmse, r2, n_r2) in zip(TARGETS, fold_metrics(labels, predictions, folds)):
-        print(f"{name:18} {rmse:12.5g} ({n_rmse})       {r2:12.5g} ({n_r2})")
+    print(f"Framework demonstration | {input_source} | {len(ids)} rows | {args.model} | {protocol} five-fold CV")
+    print(f"First input row, record {ids[0]}, held out in fold {folds[0]}")
+    print("Target and unit             Input value     Held-out prediction")
+    names_with_units = [f"{name} ({unit})" for name, unit in zip(TARGETS, TARGET_UNITS)]
+    for j, name in enumerate(names_with_units):
+        value = f"{labels[0, j]:.6g}" if np.isfinite(labels[0, j]) else "missing"
+        print(f"{name:26} {value:>12} {predictions[0, j]:23.6g}")
+    print("\nFive-fold results for this example run")
+    print("Target and RMSE unit        Mean fold RMSE (folds)     Mean fold R2 (folds)")
+    for name, (rmse, n_rmse, r2, n_r2) in zip(names_with_units, fold_metrics(labels, predictions, folds)):
+        print(f"{name:26} {rmse:12.5g} ({n_rmse})       {r2:12.5g} ({n_r2})")
     if args.export_oof:
-        export_oof(args.export_oof, ids, folds, labels, predictions)
+        run_info = {
+            "run_scope": "framework_example",
+            "input_source": input_source,
+            "input_file": args.data.name,
+            "records_sha256": digest,
+            "model_variant": args.model,
+            "split_protocol": protocol,
+            "base_seed": DEMO_SEED,
+            "epochs": args.epochs,
+        }
+        export_oof(args.export_oof, ids, folds, labels, predictions, run_info=run_info)
         print(f"Wrote {args.export_oof}")
 
 

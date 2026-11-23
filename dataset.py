@@ -2,6 +2,8 @@
 
 import argparse
 import csv
+import hashlib
+import json
 import math
 import sqlite3
 from contextlib import closing
@@ -16,6 +18,17 @@ FEATURES = (
 )
 TARGETS = ("b50_t", "p1_5_50_w_kg", "uts_mpa")
 COLUMNS = ("record_id", *FEATURES, *TARGETS)
+# Ordered numeric cells and nulls of the released SI table, independent of CSV line endings.
+TABLE_S4_DIGEST = "ffe95b35bd7b7080e3408a784ea430c3ba1ba42ab4ce376104ab10992dcc4dd9"
+
+
+def record_digest(records):
+    digest = hashlib.sha256()
+    for record in records:
+        values = [record[column] for column in COLUMNS]
+        line = json.dumps(values, separators=(",", ":"), allow_nan=False)
+        digest.update((line + "\n").encode("ascii"))
+    return digest.hexdigest()
 
 
 def read_records(path=DATA):
@@ -47,6 +60,24 @@ def read_records(path=DATA):
     return records
 
 
+def check_sqlite(records, path):
+    """Compare the CSV columns and values with the companion database in read-only mode."""
+    uri = Path(path).resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as db:
+        if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+            raise ValueError("The SQLite integrity check failed.")
+        columns = tuple(row[1] for row in db.execute("PRAGMA table_info(conditions)"))
+        if columns != COLUMNS:
+            raise ValueError("The SQLite conditions table has different columns from the CSV.")
+        sql_rows = db.execute("SELECT * FROM conditions ORDER BY record_id").fetchall()
+    if len(sql_rows) != len(records):
+        raise ValueError(f"Row counts differ: CSV {len(records)}, SQLite {len(sql_rows)}.")
+    for record, sql_row in zip(sorted(records, key=lambda row: row["record_id"]), sql_rows):
+        for column, value in zip(COLUMNS, sql_row):
+            if record[column] != value:
+                raise ValueError(f"CSV/SQLite difference at record {record['record_id']}, column {column}.")
+
+
 def write_sqlite(records, destination):
     """Create a new single-table database. Existing files are protected."""
     destination = Path(destination)
@@ -66,8 +97,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", type=Path, default=DATA)
     parser.add_argument("--sqlite", type=Path, help="Create the database at a new path.")
+    parser.add_argument("--check", action="store_true", help="Compare the CSV with its existing .sqlite3 companion.")
     args = parser.parse_args()
     rows = read_records(args.csv)
+    if args.check:
+        db_path = args.csv.with_suffix(".sqlite3")
+        try:
+            check_sqlite(rows, db_path)
+        except (ValueError, sqlite3.Error) as error:
+            parser.exit(1, f"Database check failed ({db_path.name}): {error}\n")
+        if args.csv.resolve() == DATA.resolve() and record_digest(rows) != TABLE_S4_DIGEST:
+            parser.exit(1, "Bundled records differ from the released Supplementary Table S4.\n")
+        missing = sum(value is None for row in rows for value in row.values())
+        print(f"CSV and SQLite agree on {len(rows) * len(COLUMNS)} cells, including {missing} missing values.")
     print(f"{len(rows)} records, {len(FEATURES)} input columns, {len(TARGETS)} targets")
     for target in TARGETS:
         present = sum(row[target] is not None for row in rows)
