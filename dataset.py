@@ -1,4 +1,4 @@
-"""Read the Table S4 example and export the same records to SQLite."""
+"""Read the records in Supplementary Table S4 and verify or export the SQLite database."""
 
 import argparse
 import csv

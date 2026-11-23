@@ -2,6 +2,6 @@ Research-use license notice
 
 This repository is provided for scholarly inspection, reader reproducibility checks and peer review of the associated manuscript.
 
-The code and sample data may be viewed, executed and cited for non-commercial scholarly research, teaching and peer review. Redistribution of the dataset, commercial reuse, or use to reconstruct unpublished candidate libraries is not permitted without written permission from the corresponding authors.
+The code and data in this repository may be viewed, executed and cited for non-commercial scholarly research, teaching and peer review. Redistribution of the dataset, commercial reuse, or use to reconstruct unpublished candidate libraries is not permitted without written permission from the corresponding authors.
 
 Unless otherwise stated in a final publication record, all rights are reserved by the authors.

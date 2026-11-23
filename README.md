@@ -1,22 +1,10 @@
-# Non-oriented electrical steel — Table S4 worked example
+# Non-oriented electrical steel database and code
 
-This package accompanies *Physics-guided multi-objective design of non-oriented electrical steel with balanced magnetic and mechanical properties*. A small three-output network trains on the 30 illustrative records in Supplementary Table S4. Its scores describe this example. Reproducing the manuscript’s validation requires the original development records, fold assignments, descriptors and model settings.
+Database and code accompanying *Physics-guided multi-objective design of non-oriented electrical steel with balanced magnetic and mechanical properties*.
 
-## Quick start
+## Database
 
-Run these commands from the repository directory. The data check uses only the Python standard library.
-
-```shell
-python dataset.py --check
-python -m pip install -r requirements.txt
-python run_demo.py
-```
-
-The first command checks **510 cells**, including 46 missing values, across the [CSV](data/table_s4.csv) and [SQLite database](data/table_s4.sqlite3). The model shows the first record alongside its held-out predictions. Its Table S4 targets are **1.658 T**, **2.11 W/kg** and **565 MPa**. The next output gives fold-averaged RMSE and R² across all 30 rows.
-
-## Data and units
-
-`record_id` is the printed Table S4 row number. The CSV preserves the printed precision. Dashes are stored as blank CSV cells and SQL `NULL` in the SQLite table `conditions`. All three targets are populated in every row.
+The condition records from Supplementary Table S4 are available in two formats. In both, `record_id` is the row number in Table S4. Blank CSV fields correspond to `NULL` in the SQLite table `conditions`. [CSV](data/table_s4.csv) · [SQLite](data/table_s4.sqlite3)
 
 | Fields | Quantity and unit |
 | --- | --- |
@@ -24,21 +12,25 @@ The first command checks **510 cells**, including 46 missing values, across the 
 | `sheet_thickness_mm` | Final sheet thickness in mm |
 | `final_anneal_temp_c`, `final_anneal_time_s`, `normalizing_temp_c` | Final annealing temperature in °C, holding time in s, normalizing temperature in °C |
 | `b50_t` | Magnetic induction at 5000 A/m, in T |
-| `p1_5_50_w_kg` | Specific total loss at **1.5 T and 50 Hz**, in W/kg |
+| `p1_5_50_w_kg` | Specific total loss at 1.5 T and 50 Hz, in W/kg |
 | `uts_mpa` | Ultimate tensile strength in MPa |
 
-## Model and outputs
-
-Use `--model mtnn` for the shared encoder and three regression heads. `mtnn-physics` adds one illustrative descriptor, sheet thickness squared. At fixed resistivity, the classical eddy-current term increases with this descriptor. The default `pi-mtnn` adds a local gradient penalty for that direction. Supplementary Table S5 describes the study’s broader descriptor set.
-
-The default run uses five shuffled record-level folds, seed 42, hidden width 32, 20 epochs per fold and a PI penalty coefficient of 0.002. Imputation and scaling are fitted on each training fold. The data loss uses available target values. RMSE and R² are averaged separately over folds where each metric is defined. Table S4 gives no per-row source identifiers. Grouped validation accepts verified assignments via `--source-groups sources.csv` with `record_id`, `source_id` and at least five sources.
-
-To inspect all held-out predictions, choose a new output filename.
+## Running the analysis
 
 ```shell
-python run_demo.py --export-oof outputs/example_oof.csv
+python dataset.py --check
+python -m pip install -r requirements.txt
+python cross_validate.py
 ```
 
-Each row includes input targets (`observed_*`), estimates (`predicted_*`), the fold, model and run settings. A fingerprint of the ordered records identifies Table S4 or labels a different input as user-supplied. The separate [screening utility](screening.py) ranks supplied candidate predictions using a feasibility mask and fixed development bounds.
+The first command checks that the CSV and SQLite records agree. The last command trains PI-MTNN on the Table S4 records using five shuffled folds and reports mean fold RMSE and R² for each property. Imputation and scaling are fitted on the training records in each fold. To save the held-out predictions for each record, run
 
-Tested on CPU with Python 3.11.1, NumPy 2.2.6, scikit-learn 1.6.1 and PyTorch 2.13.0.
+```shell
+python cross_validate.py --export-oof outputs/predictions.csv
+```
+
+Select a model with `--model`. The `mtnn` model uses a shared encoder and three prediction heads. The `mtnn-physics` model adds squared sheet thickness as a descriptor. The `pi-mtnn` model also penalizes negative gradients of predicted specific total loss with respect to that descriptor.
+
+The default settings use seed 42 and 20 training epochs per fold. To group the folds by literature source, pass `--source-groups sources.csv` with columns `record_id` and `source_id` and at least five distinct sources.
+
+For candidate screening, `rank_candidates` takes predicted properties, feasibility flags and fixed normalization bounds. It ranks feasible members of the Pareto front by their distance to the ideal point. [Screening code](screening.py)

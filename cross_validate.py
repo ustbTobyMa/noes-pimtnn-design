@@ -1,4 +1,4 @@
-"""Five-fold demonstration of the three model configurations using Table S4."""
+"""Run five-fold cross-validation for magnetic and mechanical property prediction."""
 
 import argparse
 import csv
@@ -14,7 +14,7 @@ from dataset import DATA, FEATURES, TABLE_S4_DIGEST, TARGETS, read_records, reco
 from model import MultiTaskNet, directional_penalty, observed_mse
 
 
-DEMO_SEED = 42
+DEFAULT_SEED = 42
 TARGET_UNITS = ("T", "W/kg", "MPa")
 
 
@@ -63,7 +63,7 @@ def fit_fold(raw, labels, descriptors, directions, train, test, variant, epochs,
     return target_scaler.inverse_transform(scaled)
 
 
-def cross_validate(raw, labels, descriptors, directions, variant, epochs, seed=DEMO_SEED, groups=None):
+def cross_validate(raw, labels, descriptors, directions, variant, epochs, seed=DEFAULT_SEED, groups=None):
     """Return one held-out prediction per row. Group labels, when used, are supplied by the caller."""
     if variant not in {"mtnn", "mtnn-physics", "pi-mtnn"} or epochs < 1:
         raise ValueError("Specify a supported model and a positive number of epochs.")
@@ -151,7 +151,7 @@ def main():
     parser.add_argument("--model", choices=["mtnn", "mtnn-physics", "pi-mtnn"], default="pi-mtnn")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--source-groups", type=Path, help="CSV of verified record_id,source_id pairs.")
-    parser.add_argument("--export-oof", type=Path, help="New CSV for example held-out predictions in physical units.")
+    parser.add_argument("--export-oof", type=Path, help="Write held-out predictions in physical units to a new CSV file.")
     args = parser.parse_args()
     rows = read_records(args.data)
     digest = record_digest(rows)
@@ -170,26 +170,26 @@ def main():
     torch.set_num_threads(1)
     folds, predictions = cross_validate(raw, labels, descriptors, directions, args.model, args.epochs, groups=groups)
     protocol = "source-grouped" if groups is not None else "record-random"
-    print(f"Framework demonstration | {input_source} | {len(ids)} rows | {args.model} | {protocol} five-fold CV")
+    print(f"{input_source} | {len(ids)} records | {args.model} | {protocol} five-fold CV")
     print(f"First input row, record {ids[0]}, held out in fold {folds[0]}")
     print("Target and unit             Input value     Held-out prediction")
     names_with_units = [f"{name} ({unit})" for name, unit in zip(TARGETS, TARGET_UNITS)]
     for j, name in enumerate(names_with_units):
         value = f"{labels[0, j]:.6g}" if np.isfinite(labels[0, j]) else "missing"
         print(f"{name:26} {value:>12} {predictions[0, j]:23.6g}")
-    print("\nFive-fold results for this example run")
+    print("\nMean metrics across validation folds")
     print("Target and RMSE unit        Mean fold RMSE (folds)     Mean fold R2 (folds)")
     for name, (rmse, n_rmse, r2, n_r2) in zip(names_with_units, fold_metrics(labels, predictions, folds)):
         print(f"{name:26} {rmse:12.5g} ({n_rmse})       {r2:12.5g} ({n_r2})")
     if args.export_oof:
         run_info = {
-            "run_scope": "framework_example",
+            "run_scope": "five_fold_cross_validation",
             "input_source": input_source,
             "input_file": args.data.name,
             "records_sha256": digest,
             "model_variant": args.model,
             "split_protocol": protocol,
-            "base_seed": DEMO_SEED,
+            "base_seed": DEFAULT_SEED,
             "epochs": args.epochs,
         }
         export_oof(args.export_oof, ids, folds, labels, predictions, run_info=run_info)
